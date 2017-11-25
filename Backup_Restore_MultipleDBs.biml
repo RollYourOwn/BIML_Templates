@@ -1,0 +1,106 @@
+<#
+var databases = new[] { "TestSource", "TestDest" };
+string bck_path  = "c:\\temp\\";
+string emailto   = "nick.devenish@MyCompany.com" 
+#>
+
+<Biml xmlns="http://schemas.varigence.com/biml.xsd" >
+    <Annotations>
+        <Annotation>This Project fullfils the requirement for databases from the production accounting server to be 
+	            replicated to the dev server. Database selection per instructions from Michael Reale
+        </Annotation>
+    </Annotations>
+	<Connections>
+		<SmtpConnection Name="SmtpServerConnection" SmtpServer="smtp.MyCompany.com" EnableSsl="false"/>
+		 <AdoNetConnection Name="Localhost_ADO_DB" ConnectionString="Data Source=localhost;Integrated Security=SSPI;Connect Timeout=30;Database=msdb;" Provider="SQL"  />
+		<OleDbConnection Name="OLE_Database_Connection" ConnectionString="Provider=SQLNCLI11;Server=localhost;Initial Catalog=Master;Integrated Security=SSPI;" />
+    </Connections>
+<Packages >
+	<Package Name="Accounting_DBReplication_Prod_Dev_Master" ConstraintMode="Linear">
+		<Annotations>
+			<Annotation>Executes backup packages on source and restores on target server</Annotation>
+        </Annotations> 
+		<Tasks>
+		    <# foreach(string db in databases){#>
+			<ExecutePackage 
+				Name="Exec_Backup_<#=db#>"
+			    ForceExecutionResult="Success">
+				<Package PackageName="Pkg_BackupDB_<#=db#>" /> 
+             </ExecutePackage>
+             <#}#>
+             <# foreach(string db in databases){#>
+			 <ExecutePackage 
+				Name="Exec_Restore_<#=db#>"
+			    ForceExecutionResult="Success">
+				<Package PackageName="Pkg_Restore_<#=db#>" /> 
+             </ExecutePackage>
+            <#}#>   
+        </Tasks> 
+    </Package>
+    <# foreach(string db in databases){
+       string path = String.Format("{0}{1}.bak",bck_path,db);
+   #>
+	<Package Name="Pkg_BackupDB_<#=db#>" >
+		<Events>
+			<Event Name="On_TaskFailed" EventType="OnTaskFailed" ConstraintMode="Linear">
+				<Tasks>
+					<SendMail 
+					    Name="FailureNotification"
+						ToLine="<#=emailto#>" 
+						ConnectionName="SmtpServerConnection"
+						FromLine="ServerName@MyCompany.com"   
+						Subject="Failure_PackageName_TaskName" 
+						DelayValidation="true">
+						<DirectInput>Backup of <#=db#> DB on Server has failed. Target: </DirectInput>
+					</SendMail>
+                </Tasks>
+            </Event> 
+        </Events> 
+		<Tasks> 
+			<BackupDatabase BackupAction="Full" ConnectionName="Localhost_ADO_DB" BackupDeviceType="Disk" FailParentOnFailure="0" FailPackageOnFailure="1" Name="Backup_<#=db#>" DatabaseSelectionMode="Specific" >
+				<ManualBackupDestination ExistingBackupsAction="Overwrite">
+				    <Destinations>
+				        <Destination Name="<#=path#>" DestinationType="File" ></Destination> 
+				    </Destinations>
+				</ManualBackupDestination>
+				<Databases>
+					<Database><#=db#></Database>					
+                </Databases> 
+            </BackupDatabase>
+        </Tasks>
+    </Package>
+    <#}#>
+       <# foreach(string db in databases){
+       string path = String.Format("{0}{1}.bak",bck_path,db);
+   #>
+   <Package Name="Pkg_Restore_<#=db#>">
+		<Events>
+			<Event Name="On_RestoreFailed" EventType="OnTaskFailed">
+				<Tasks>
+					<SendMail 
+					    Name="FailureNotification"
+						ToLine="<#=emailto#>"
+						ConnectionName="SmtpServerConnection" 
+						FromLine="ServerName@MyCompany.com" 
+						Subject="Failure_PackageName_TaskName" 
+						DelayValidation="true">
+						<DirectInput>Restore of DB <#=db#> on Server has failed. Target: </DirectInput>
+					</SendMail>
+                </Tasks>
+            </Event> 
+        </Events> 
+		<Tasks>
+			 <ExecuteSQL Name="Restore_<#=db#>" FailParentOnFailure="false" FailPackageOnFailure="true" BypassPrepare="true" ConnectionName="OLE_Database_Connection" >
+				 <DirectInput>
+					USE [master]
+					ALTER DATABASE [<#=db#>] SET SINGLE_USER WITH ROLLBACK IMMEDIATE
+					RESTORE DATABASE [<#=db#>] FROM  DISK = N'<#=path#>' 
+					WITH  FILE = 1,  NOUNLOAD,  REPLACE,  STATS = 5
+					ALTER DATABASE [<#=db#>] SET MULTI_USER
+                 </DirectInput>
+             </ExecuteSQL>
+        </Tasks>
+    </Package>    
+   <#}#>        
+</Packages>
+</Biml>
